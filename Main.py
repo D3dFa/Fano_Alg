@@ -7,11 +7,7 @@ MAGIC = b"FANO1"
 
 # ---------- Построение кода Фано (итеративно, без рекурсии) ----------
 def build_fano_code(symbols_weights, show_splits=False):
-    """
-    Построение кодов Фано с использованием явного стека (без рекурсии).
-    symbols_weights: list[(symbol, weight)] с положительными весами (частотами).
-    Возвращает dict: symbol -> bitstring.
-    """
+
     if not symbols_weights:
         return {}
 
@@ -104,10 +100,7 @@ def decode_from_bits(bitstring, codebook, verbose=True):
 
 # ---------- Упаковка/распаковка битов ----------
 def pack_bits(bitstring):
-    """
-    Преобразует битовую строку ('0'/'1') в bytes. Возвращает (payload_bytes, num_bits).
-    Последний байт добивается нулями справа.
-    """
+  
     num_bits = len(bitstring)
     out = bytearray()
     cur = 0
@@ -125,10 +118,7 @@ def pack_bits(bitstring):
     return bytes(out), num_bits
 
 def unpack_bits(data_bytes, num_bits):
-    """
-    Превращает bytes в битовую строку ('0'/'1') указанной длины num_bits,
-    отбрасывая добивочные биты в конце.
-    """
+
     bits = []
     for byte in data_bytes:
         for i in range(7, -1, -1):
@@ -226,3 +216,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
