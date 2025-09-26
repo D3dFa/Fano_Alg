@@ -1,219 +1,261 @@
 import argparse
-import json
+from collections import defaultdict
 import struct
-from collections import Counter
 
-MAGIC = b"FANO1"
+class Node:
+    def __init__(self, freq, char=None, left=None, right=None):
+        self.freq = freq  # Частота символа
+        self.char = char  # Символ (для листьев)
+        self.left = left  # Левый потомок
+        self.right = right  # Правый потомок
 
-# ---------- Построение кода Фано (итеративно, без рекурсии) ----------
-def build_fano_code(symbols_weights, show_splits=False):
+    def __lt__(self, other):
+        return self.freq < other.freq
 
-    if not symbols_weights:
-        return {}
+def build_frequency_table(text):
+    frequency = defaultdict(int)
+    for char in text:
+        frequency[char] += 1
+    return frequency
 
-    # Стабильная сортировка: по убыванию веса, при равенстве — по символу
-    items = sorted(symbols_weights, key=lambda x: (-x[1], x[0]))
-    n = len(items)
-    if n == 1:
-        return {items[0][0]: "0"}
+# -------------------- Шеннон–Фано --------------------
+def _split_index_by_balance(pairs):
+    if not pairs:
+        return 0
+    total = sum(freq for _, freq in pairs)
+    running = 0
+    best_i = 1
+    best_diff = float('inf')
+    for i in range(1, len(pairs)):
+        running += pairs[i-1][1]
+        diff = abs(total/2 - running)
+        if diff < best_diff:
+            best_diff = diff
+            best_i = i
+    return best_i
 
-    code = {}
-    stack = [(items, "")]  # LIFO
+def _build_fano_from_sorted(pairs):
+    if not pairs:
+        return None
+    if len(pairs) == 1:
+        ch, fr = pairs[0]
+        return Node(fr, ch)
+    i = _split_index_by_balance(pairs)
+    left_pairs = pairs[:i]
+    right_pairs = pairs[i:]
+    left = _build_fano_from_sorted(left_pairs)
+    right = _build_fano_from_sorted(right_pairs)
+    return Node(sum(freq for _, freq in pairs), None, left, right)
 
+def build_fano_tree(frequency):
+    pairs = sorted(frequency.items(), key=lambda kv: kv[1], reverse=True)
+    if len(pairs) == 0:
+        return None
+    return _build_fano_from_sorted(pairs)
+# -----------------------------------------------------
+
+def build_codes_iterative(root):
+    codebook = {}
+    if root is None:
+        return codebook
+    stack = [(root, "")]
     while stack:
-        arr, pref = stack.pop()
-        m = len(arr)
+        node, prefix = stack.pop()
+        if node.char is not None:
+            codebook[node.char] = prefix or "0"
+        else:
+            if node.right:
+                stack.append((node.right, prefix + "1"))
+            if node.left:
+                stack.append((node.left, prefix + "0"))
+    return codebook
 
-        if m == 1:
-            sym = arr[0][0]
-            code[sym] = pref or "0"
-            continue
+def encode(text, codebook):
+    return ''.join(codebook[char] for char in text)
 
-        if m == 2:
-            code[arr[0][0]] = pref + "0"
-            code[arr[1][0]] = pref + "1"
-            continue
+def decode(encoded_bits, root):
+    decoded = []
+    node = root
+    for bit in encoded_bits:
+        node = node.left if bit == '0' else node.right
+        if node.char is not None:
+            decoded.append(node.char)
+            node = root
+    return ''.join(decoded)
 
-        # Ищем точку разделения с минимальной разницей от половины суммы
-        total = sum(w for _, w in arr)
-        half = total / 2
-        acc = 0.0
-        best_i = 0
-        best_diff = float("inf")
-        for i, (_, w) in enumerate(arr):
-            acc += w
-            diff = abs(half - acc)
-            if diff < best_diff:
-                best_diff = diff
-                best_i = i
-
-        # Гарантируем, что обе части непустые
-        if best_i <= 0:
-            best_i = 0
-        if best_i >= m - 1:
-            best_i = m - 2
-
-        left = arr[:best_i + 1]
-        right = arr[best_i + 1:]
-
-        if show_splits:
-            print(f"SPLIT prefix={pref!r}: LEFT={[s for s,_ in left]} | RIGHT={[s for s,_ in right]}")
-
-        # Обрабатываем левую часть раньше правой (пушим правую первой)
-        stack.append((right, pref + "1"))
-        stack.append((left, pref + "0"))
-
-    return code
-
-# ---------- Кодирование/декодирование (с печатью шагов) ----------
-def encode_to_bits(text, codebook, verbose=True):
-    if verbose:
-        print("\n=== Кодирование ===")
+def serialize_tree_iterative(root):
     bits = []
-    for ch in text:
-        try:
-            code = codebook[ch]
-        except KeyError:
-            raise KeyError(f"Символ {repr(ch)} отсутствует в кодовой книге")
-        if verbose:
-            print(f"Символ: {repr(ch)} → Код: {code}")
-        bits.append(code)
-    return "".join(bits)
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.char is not None:
+            bits.append('1')
+            char_bits = format(ord(node.char), '08b')
+            bits.extend(char_bits)
+        else:
+            bits.append('0')
+            if node.right:
+                stack.append(node.right)
+            if node.left:
+                stack.append(node.left)
+    bit_string = ''.join(bits)
+    return bit_string_to_bytes(bit_string)
 
-def decode_from_bits(bitstring, codebook, verbose=True):
-    if verbose:
-        print("\n=== Декодирование ===")
-    reverse = {v: k for k, v in codebook.items()}
-    buf = ""
-    out_chars = []
-    for b in bitstring:
-        buf += b
-        if buf in reverse:
-            ch = reverse[buf]
-            if verbose:
-                print(f"Код: {buf} → Символ: {repr(ch)}")
-            out_chars.append(ch)
-            buf = ""
-    if buf:
-        raise ValueError("Непустой буфер после чтения битов — повреждён поток или неверная кодовая книга.")
-    return "".join(out_chars)
+def deserialize_tree_iterative(bit_bytes):
+    bit_string = bytes_to_bit_string(bit_bytes)
+    it = iter(bit_string)
+    stack = []
+    root = None
+    try:
+        while True:
+            bit = next(it)
+            if bit == '1':
+                char_bits = ''.join(next(it) for _ in range(8))
+                leaf = Node(0, chr(int(char_bits, 2)))
+                if not stack:
+                    root = leaf
+                else:
+                    parent = stack[-1]
+                    if parent.left is None:
+                        parent.left = leaf
+                    elif parent.right is None:
+                        parent.right = leaf
+                        stack.pop()
+            else:  # bit == '0'
+                internal = Node(0, None)
+                if not stack:
+                    root = internal
+                else:
+                    parent = stack[-1]
+                    if parent.left is None:
+                        parent.left = internal
+                    elif parent.right is None:
+                        parent.right = internal
+                        stack.pop()
+                stack.append(internal)
+    except StopIteration:
+        pass
+    return root
 
-# ---------- Упаковка/распаковка битов ----------
-def pack_bits(bitstring):
-  
-    num_bits = len(bitstring)
-    out = bytearray()
-    cur = 0
-    cnt = 0
-    for ch in bitstring:
-        cur = (cur << 1) | (1 if ch == '1' else 0)
-        cnt += 1
-        if cnt == 8:
-            out.append(cur)
-            cur = 0
-            cnt = 0
-    if cnt:
-        cur <<= (8 - cnt)
-        out.append(cur)
-    return bytes(out), num_bits
+def bit_string_to_bytes(s):
+    padding = (8 - len(s) % 8) % 8
+    s += '0' * padding
+    byte_array = bytearray()
+    for i in range(0, len(s), 8):
+        byte = s[i:i+8]
+        byte_array.append(int(byte, 2))
+    return bytes([padding]) + bytes(byte_array)
 
-def unpack_bits(data_bytes, num_bits):
+def bytes_to_bit_string(b):
+    padding = b[0]
+    bit_string = ''.join(f'{byte:08b}' for byte in b[1:])
+    if padding > 0:
+        bit_string = bit_string[:-padding]
+    return bit_string
 
-    bits = []
-    for byte in data_bytes:
-        for i in range(7, -1, -1):
-            bits.append('1' if (byte >> i) & 1 else '0')
-    return "".join(bits[:num_bits])
+def save_encoded_file(encoded_bits, tree_bits, output_file):
+    with open(output_file, 'wb') as f:
+        tree_length = len(tree_bits)
+        f.write(struct.pack('>I', tree_length))  # 4 байта для длины
+        f.write(tree_bits)
+        f.write(encoded_bits)
 
-# ---------- Запись/чтение бинарного контейнера ----------
-def write_binary(filename, codebook, bitstring, text_len):
-    payload, num_bits = pack_bits(bitstring)
-    header_obj = {
-        "codebook": codebook,
-        "num_bits": num_bits,
-        "text_len": text_len,
-    }
-    header_bytes = json.dumps(header_obj, ensure_ascii=False).encode("utf-8")
-    with open(filename, "wb") as f:
-        f.write(MAGIC)
-        f.write(struct.pack(">I", len(header_bytes)))
-        f.write(header_bytes)
-        f.write(payload)
-    print(f"\nФайл сохранён: {filename}")
-    print(f"Размер хедера: {len(header_bytes)} байт, полезных бит: {num_bits}, полезных байт: {len(payload)}")
+def load_encoded_file(input_file):
+    with open(input_file, 'rb') as f:
+        tree_length_bytes = f.read(4)
+        if len(tree_length_bytes) < 4:
+            raise ValueError("Файл поврежден или некорректен.")
+        tree_length = struct.unpack('>I', tree_length_bytes)[0]
+        tree_bits = f.read(tree_length)
+        encoded_bits = f.read()
+    return tree_bits, encoded_bits
 
-def read_binary(filename):
-    with open(filename, "rb") as f:
-        magic = f.read(len(MAGIC))
-        if magic != MAGIC:
-            raise ValueError("Неверная сигнатура файла (magic).")
-        (hdr_len,) = struct.unpack(">I", f.read(4))
-        header_bytes = f.read(hdr_len)
-        header_obj = json.loads(header_bytes.decode("utf-8"))
-        payload = f.read()
+def display_codes(codebook):
+    print("Коды Шеннона–Фано:")
+    for char, code in sorted(codebook.items()):
+        if char == ' ':
+            display_char = "' ' (пробел)"
+        elif char == '\n':
+            display_char = "'\\n' (новая строка)"
+        else:
+            display_char = repr(char)
+        print(f"{display_char}: {code}")
 
-    codebook = header_obj.get("codebook", {})
-    num_bits = int(header_obj.get("num_bits", 0))
-    text_len = int(header_obj.get("text_len", 0))
-    bitstring = unpack_bits(payload, num_bits)
+def display_tree_iterative(root):
+    stack = [(root, '')]
+    while stack:
+        node, prefix = stack.pop()
+        if node.char is not None:
+            print(f"{prefix}Leaf: {repr(node.char)}")
+        else:
+            print(f"{prefix}Node:")
+            if node.right:
+                stack.append((node.right, prefix + " 1-"))
+            if node.left:
+                stack.append((node.left, prefix + " 0-"))
 
-    print(f"\nФайл прочитан: {filename}")
-    print(f"Размер хедера: {hdr_len} байт, полезных бит: {num_bits}, полезных байт: {len(payload)}")
-    return codebook, bitstring, text_len
+def encode_file(input_file, output_file, display=False, display_tree_flag=False):
+    with open(input_file, 'r', encoding='ascii') as f:
+        text = f.read()
+    frequency = build_frequency_table(text)
+    tree = build_fano_tree(frequency)
+    if tree is None:
+        print("Входной файл пуст.")
+        return
+    codebook = build_codes_iterative(tree)
+    encoded_bit_string = encode(text, codebook)
+    encoded_bits = bit_string_to_bytes(encoded_bit_string)
+    tree_bits = serialize_tree_iterative(tree)
+    save_encoded_file(encoded_bits, tree_bits, output_file)
+    if display:
+        display_codes(codebook)
+    if display_tree_flag:
+        print("Дерево Шеннона–Фано:")
+        display_tree_iterative(tree)
 
-# ---------- Основной CLI ----------
+def decode_file(input_file, output_file, display=False, display_tree_flag=False):
+    tree_bits, encoded_bits = load_encoded_file(input_file)
+    tree = deserialize_tree_iterative(tree_bits)
+    if tree is None:
+        print("Входной файл не содержит данных для декодирования.")
+        return
+    if display_tree_flag:
+        print("Дерево Шеннона–Фано:")
+        display_tree_iterative(tree)
+    encoded_bit_string = bytes_to_bit_string(encoded_bits)
+    decoded_text = decode(encoded_bit_string, tree)
+    with open(output_file, 'w', encoding='ascii') as f:
+        f.write(decoded_text)
+    if display:
+        print("Декодированный текст:")
+        print(decoded_text)
+
 def main():
-    parser = argparse.ArgumentParser(description="Fano coding CLI (итеративная реализация, без рекурсии)")
-    subparsers = parser.add_subparsers(dest="command")
+    parser = argparse.ArgumentParser(description="Система кодирования и декодирования с использованием алгоритма Шеннона–Фано.")
+    subparsers = parser.add_subparsers(dest='command', help='Команда: encode или decode')
 
-    # encode
-    enc = subparsers.add_parser("encode", help="Закодировать текстовый файл в бинарный")
-    enc.add_argument("input", help="Входной текстовый файл (UTF-8)")
-    enc.add_argument("output", help="Выходной бинарный файл")
-    enc.add_argument("-q", "--quiet", action="store_true", help="Без показа шагов кодирования")
-    enc.add_argument("--show-splits", action="store_true", help="Показывать разбиения при построении кодовой книги")
+    # Подкоманда encode
+    encode_parser = subparsers.add_parser('encode', help='Кодирование файла')
+    encode_parser.add_argument('input', help='Входной текстовый файл для кодирования')
+    encode_parser.add_argument('output', help='Выходной файл с закодированными данными')
+    encode_parser.add_argument('-c', '--codes', action='store_true', help='Отобразить коды Шеннона–Фано')
+    encode_parser.add_argument('-t', '--tree', action='store_true', help='Отобразить дерево Шеннона–Фано')
 
-    # decode
-    dec = subparsers.add_parser("decode", help="Декодировать бинарный файл в текстовый")
-    dec.add_argument("input", help="Входной бинарный файл")
-    dec.add_argument("output", help="Выходной текстовый файл (UTF-8)")
-    dec.add_argument("-q", "--quiet", action="store_true", help="Без показа шагов декодирования")
+    # Подкоманда decode
+    decode_parser = subparsers.add_parser('decode', help='Декодирование файла')
+    decode_parser.add_argument('input', help='Входной файл с закодированными данными')
+    decode_parser.add_argument('output', help='Выходной текстовый файл с декодированными данными')
+    decode_parser.add_argument('-c', '--codes', action='store_true', help='Отобразить декодированный текст')
+    decode_parser.add_argument('-t', '--tree', action='store_true', help='Отобразить дерево Шеннона–Фано')
 
     args = parser.parse_args()
 
-    if args.command == "encode":
-        with open(args.input, "r", encoding="utf-8") as f:
-            text = f.read()
-
-        if not text:
-            print("⚠️ Внимание: входной файл пуст. Будет записан пустой контейнер.")
-            codebook = {}
-            bitstring = ""
-            write_binary(args.output, codebook, bitstring, text_len=0)
-            return
-
-        # Используем целочисленные веса (частоты) — это устойчивее, чем вероятности с float-округлением
-        freqs = Counter(text)
-        weights = list(freqs.items())
-        codebook = build_fano_code(weights, show_splits=args.show_splits)
-
-        print("\n=== Словарь кодов ===")
-        for s, c in sorted(codebook.items(), key=lambda x: (len(x[1]), x[0])):
-            print(f"{repr(s)}: {c}")
-
-        bitstring = encode_to_bits(text, codebook, verbose=not args.quiet)
-        write_binary(args.output, codebook, bitstring, text_len=len(text))
-
-    elif args.command == "decode":
-        codebook, bitstring, _ = read_binary(args.input)
-        decoded_text = decode_from_bits(bitstring, codebook, verbose=not args.quiet)
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(decoded_text)
-        print(f"\nДекодированный текст сохранён в: {args.output}")
-
+    if args.command == 'encode':
+        encode_file(args.input, args.output, display=args.codes, display_tree_flag=args.tree)
+    elif args.command == 'decode':
+        decode_file(args.input, args.output, display=args.codes, display_tree_flag=args.tree)
     else:
         parser.print_help()
 
 if __name__ == "__main__":
     main()
-
